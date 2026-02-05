@@ -96,7 +96,12 @@ func makeTransformOptions(options js.Value) transform.TransformOptions {
 	astroGlobalArgs := jsString(options.Get("astroGlobalArgs"))
 
 	compact := false
-	if jsBool(options.Get("compact")) {
+	compactMode := ""
+	compactVal := options.Get("compact")
+	if compactVal.Type() == js.TypeString && compactVal.String() == "react" {
+		compact = true
+		compactMode = "react"
+	} else if jsBool(compactVal) {
 		compact = true
 	}
 
@@ -152,6 +157,7 @@ func makeTransformOptions(options js.Value) transform.TransformOptions {
 		SourceMap:               sourcemap,
 		AstroGlobalArgs:         astroGlobalArgs,
 		Compact:                 compact,
+		CompactMode:             compactMode,
 		ResolvePath:             resolvePathFn,
 		PreprocessStyle:         preprocessStyle,
 		ResultScopedSlot:        scopedSlot,

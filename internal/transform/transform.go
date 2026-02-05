@@ -3,6 +3,7 @@ package transform
 import (
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strings"
 	"unicode"
 
@@ -29,6 +30,7 @@ type TransformOptions struct {
 	AstroGlobalArgs         string
 	ScopedStyleStrategy     string
 	Compact                 bool
+	CompactMode             string // "" = current behavior, "react" = React-style whitespace handling
 	ResultScopedSlot        bool
 	TransitionsAnimationURL string
 	ResolvePath             func(string) string
@@ -111,7 +113,11 @@ func Transform(doc *astro.Node, opts TransformOptions, h *handler.Handler) *astr
 	TrimTrailingSpace(doc)
 
 	if opts.Compact {
-		collapseWhitespace(doc)
+		if opts.CompactMode == "react" {
+			collapseWhitespaceReact(doc)
+		} else {
+			collapseWhitespace(doc)
+		}
 	}
 
 	return doc
@@ -282,12 +288,7 @@ func isRawElement(n *astro.Node) bool {
 		}
 	}
 	rawTags := []string{"pre", "listing", "iframe", "noembed", "noframes", "math", "plaintext", "script", "style", "textarea", "title", "xmp"}
-	for _, tag := range rawTags {
-		if n.Data == tag {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(rawTags, n.Data)
 }
 
 func isWhitespaceInsensitiveElement(n *astro.Node) bool {
@@ -359,6 +360,88 @@ func collapseWhitespace(doc *astro.Node) {
 					n.Data = n.Data + " "
 				}
 			}
+		}
+	})
+}
+
+// An implementation of the React/Babel algorithm for stripping whitespace in JSX text nodes.
+//
+// Ported from https://github.com/babel/babel/blob/8ddfe9c/packages/babel-types/src/utils/react/cleanJSXElementLiteralChild.ts#L5-L51
+func cleanJSXTextWhitespace(text string) string {
+	// Normalize \r\n first to avoid double-splitting
+	normalized := strings.ReplaceAll(text, "\r\n", "\n")
+	normalized = strings.ReplaceAll(normalized, "\r", "\n")
+	lines := strings.Split(normalized, "\n")
+
+	if len(lines) == 1 {
+		// Single line: only convert tabs to spaces
+		return strings.ReplaceAll(text, "\t", " ")
+	}
+
+	lastNonEmptyLine := 0
+	for i, line := range lines {
+		trimmed := strings.TrimLeft(line, " \t")
+		if len(trimmed) > 0 {
+			lastNonEmptyLine = i
+		}
+	}
+
+	var result strings.Builder
+	for i, line := range lines {
+		isFirstLine := i == 0
+		isLastLine := i == len(lines)-1
+		isLastNonEmptyLine := i == lastNonEmptyLine
+
+		// Convert all tabs to single spaces
+		processedLine := strings.ReplaceAll(line, "\t", " ")
+
+		// Trim leading spaces (but NOT on first line)
+		if !isFirstLine {
+			processedLine = strings.TrimLeft(processedLine, " ")
+		}
+
+		// Trim trailing spaces (but NOT on last line)
+		if !isLastLine {
+			processedLine = strings.TrimRight(processedLine, " ")
+		}
+
+		// Accumulate non-empty lines with space separator
+		if len(processedLine) > 0 {
+			if !isLastNonEmptyLine {
+				processedLine = processedLine + " "
+			}
+			result.WriteString(processedLine)
+		}
+	}
+
+	return result.String()
+}
+
+// React-style JSX whitespace stripping.
+func collapseWhitespaceReact(doc *astro.Node) {
+	walk(doc, func(n *astro.Node) {
+		if n.Type == astro.TextNode {
+			// Don't trim any whitespace if the node or any of its ancestors is raw
+			if n.Closest(isRawElement) != nil {
+				return
+			}
+
+			// Trim the whitespace on each end of top-level expressions
+			if n.Parent != nil && n.Parent.Expression {
+				// Trim left whitespace in the first child
+				if n.PrevSibling == nil {
+					n.Data = strings.TrimLeftFunc(n.Data, unicode.IsSpace)
+				}
+				// Trim right whitespace in the last child
+				if n.NextSibling == nil {
+					n.Data = strings.TrimRightFunc(n.Data, unicode.IsSpace)
+				}
+				// Don't apply React text cleaning inside expressions
+				return
+			}
+
+			// Apply React's JSX text whitespace algorithm
+			n.Data = cleanJSXTextWhitespace(n.Data)
 		}
 	})
 }
